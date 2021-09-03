@@ -20,15 +20,17 @@ import torch.optim as optim
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataset import T_co
-from data_io import ReadList, read_conf
+from data_io import ReadList, read_conf_inp
 from dnn_models import NeuralNetwork
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using {} device".format(device))
+# Reading cfg file
+options = read_conf_inp("cfg/SincNet_CNCeleb.cfg")
 
 
 class AudioDataset(Dataset):
-    def __init__(self, annotations_file, data_dir, croplen):
+    def __init__(self, annotations_file, id_num, data_dir, croplen):
         """
         Parameters
         ----------
@@ -38,14 +40,15 @@ class AudioDataset(Dataset):
         super(AudioDataset, self).__init__()
         self.data_dir = data_dir
         self.croplen = croplen
+        self.id_num = id_num
         with open(annotations_file, 'r') as f:
             self.datalist = f.readlines()
 
     def __getitem__(self, index) -> T_co:
-        item = self.datalist[index]
+        item = self.datalist[index].replace('\n', "")
         audio_path = os.path.join(self.data_dir, item)
         audio, _ = sf.read(audio_path)
-        label = item.split("/")[0][2:]
+        label = item.split("/")[0][2:7]
         channels = len(audio.shape)
         if channels != 1:
             print('WARNING: stereo to mono: ' + audio_path)
@@ -56,17 +59,14 @@ class AudioDataset(Dataset):
         audio_beg = np.random.randint(audio_len - self.croplen - 1)
         audio_end = audio_beg + self.croplen
 
-        audio[:] = audio[audio_beg:audio_end]
-        y_one_hot = torch.zeros([1, len(self.datalist)])
-        y_one_hot[int(label)] = 1.
-        return torch.tensor(audio), y_one_hot
+        audio_chunk = audio[audio_beg:audio_end]
+        # y_one_hot = torch.zeros([self.id_num])
+        # y_one_hot.scatter_(0, torch.LongTensor([int(label)]), 1)
+        return torch.tensor(audio_chunk, dtype=torch.float32), torch.tensor(int(label))
 
     def __len__(self):
         return len(self.datalist)
 
-
-# Reading cfg file
-options = read_conf()
 
 # [data]
 tr_lst = options.tr_lst
@@ -92,32 +92,16 @@ snt_tr = len(wav_lst_tr)
 wav_lst_te = ReadList(te_lst)
 snt_te = len(wav_lst_te)
 
-# Folder creation
-try:
-    os.stat(output_folder)
-except:
-    os.mkdir(output_folder)
-
 # setting seed
 torch.manual_seed(seed)
 np.random.seed(seed)
+
 
 # loss function
 
 
 # Converting context and shift in samples
 # wshift = int(fs * cw_shift / 1000.00)
-
-# Batch_dev
-batch_size = 128
-
-# Loading label dictionary
-# lab_dict = np.load(class_dict_file).item()
-
-model = NeuralNetwork().to(device)
-print(model)
-loss_fn = nn.NLLLoss()
-optimizer = optim.RMSprop(model.parameters(), lr=lr, alpha=0.95, eps=1e-8)
 
 
 def train(dataloader, model, loss_fn, optimizer):
@@ -135,7 +119,7 @@ def train(dataloader, model, loss_fn, optimizer):
         loss.backward()
         optimizer.step()
 
-        if batch % 100 == 0:
+        if batch % 10 == 0:
             loss, current = loss.item(), batch * len(X)
             print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
 
@@ -156,12 +140,40 @@ def test(dataloader, model, loss_fn):
     print(f"Test Error: \n Accuracy: {(100 * correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
 
 
-training_data = AudioDataset("train.lst", "data", model.audio_len)
+# Batch_dev
+batch_size = 16
+
+# Loading label dictionary
+# lab_dict = np.load(class_dict_file, allow_pickle=True).item()
+
+model = NeuralNetwork(options).to(device)
+current_epoch = 0
+if os.path.exists(output_folder + "checkpoint.cpt"):
+    cpt = torch.load(output_folder + "checkpoint.cpt")
+    current_epoch = cpt["epoch"]
+    model.load_state_dict(torch.load(output_folder + f"/model_{current_epoch}.pth"))
+    print("[*] load model from " + output_folder + f"/model_{current_epoch}.pth")
+loss_fn = nn.NLLLoss()
+optimizer = optim.RMSprop(model.parameters(), lr=lr, alpha=0.95, eps=1e-8)
+
+training_data = AudioDataset("train.lst", 7, "data", model.audio_len)
 train_dataloader = DataLoader(training_data, batch_size=batch_size)
 for X, y in train_dataloader:
-    print("Shape of X [N, C, H, W]: ", X.shape)
+    print("Shape of X [N, W]: ", X.shape)
     print("Shape of y: ", y.shape, y.dtype)
     break
+
+epochs = 3
+for t in range(current_epoch + 1, epochs):
+    print(f"Epoch {t+1}\n-------------------------------")
+    train(train_dataloader, model, loss_fn, optimizer)
+    checkpoint = {
+        'epoch': t
+    }
+    torch.save(checkpoint, output_folder + "/checkpoint.cpt")
+    torch.save(model.state_dict(), output_folder + f"/model_{t}.pth")
+    print(f"Saved PyTorch Model State to model_{t}.pth")
+print("Done!")
 
 '''
 for epoch in range(N_epochs):

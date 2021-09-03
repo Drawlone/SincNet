@@ -6,7 +6,7 @@ import sys
 from torch.autograd import Variable
 import math
 
-from SincNet.data_io import str_to_bool
+from data_io import str_to_bool
 
 
 def flip(x, dim):
@@ -148,7 +148,7 @@ class SincConv_fast(nn.Module):
 
         band_pass = band_pass / (2 * band[:, None])
 
-        self.filters = (band_pass).view(
+        self.filters = band_pass.view(
             self.out_channels, 1, self.kernel_size)
 
         return F.conv1d(waveforms, self.filters, stride=self.stride,
@@ -424,8 +424,9 @@ class SincNet(nn.Module):
 
             if self.cnn_use_laynorm[i]:
                 if i == 0:
+                    res = F.max_pool1d(torch.abs(self.conv[i](x)), self.cnn_max_pool_len[i])
                     x = self.drop[i](
-                        self.act[i](self.ln[i](F.max_pool1d(torch.abs(self.conv[i](x)), self.cnn_max_pool_len[i]))))
+                        self.act[i](self.ln[i](res)))
                 else:
                     x = self.drop[i](self.act[i](self.ln[i](F.max_pool1d(self.conv[i](x), self.cnn_max_pool_len[i]))))
 
